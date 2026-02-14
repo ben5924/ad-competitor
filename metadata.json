@@ -1,0 +1,5 @@
+{
+  "name": "Competitor Ad Intelligence",
+  "description": "A dashboard to retrieve Facebook Ads Library data and analyze competitor strategies using Gemini AI.",
+  "requestFramePermissions": []
+}
