@@ -1,5 +1,4 @@
 
-
 export interface AdEntity {
   id: string;
   ad_creation_time: string;
@@ -59,6 +58,7 @@ export interface AdEntity {
   extracted_image_url?: string;
   extracted_video_url?: string;
   media_type?: 'VIDEO' | 'IMAGE' | 'DYNAMIC_IMAGE' | 'UNKNOWN' | 'SCREENSHOT';
+  media_url?: string; // URL directe depuis Apify/Supabase
 }
 
 export interface Competitor {

@@ -1,0 +1,11 @@
+
+{
+  "mcpServers": {
+    "apify": {
+      "url": "https://mcp.apify.com/?tools=actors,docs,curious_coder/facebook-ads-library-scraper",
+      "headers": {
+        "Authorization": "Bearer <VOTRE_TOKEN_APIFY_ICI>"
+      }
+    }
+  }
+}

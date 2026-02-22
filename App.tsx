@@ -5,8 +5,7 @@ import { fetchCompetitorAds, fetchPageDetails, validateApiToken } from './servic
 import { analyzeAdsStrategy } from './services/geminiService';
 import { authService } from './services/authService';
 import { startOnboarding } from './services/tourService';
-import { batchDetectMediaTypes, detectDynamicCreativeByBody } from './services/mediaExtractionService';
-import { runFullSyncPipeline } from './services/apifyService';
+import { runFullSyncPipeline, checkApifyConnection, sanitizeToken } from './services/apifyService';
 import { updateSupabaseConfig, getCurrentSupabaseConfig } from './services/supabaseClient';
 import { AdCard } from './components/AdCard';
 import { DashboardStats } from './components/DashboardStats';
@@ -27,8 +26,8 @@ type TimeRange = '7d' | '30d' | 'ALL';
 type MediaFilter = 'ALL' | 'VIDEO' | 'IMAGE' | 'DYNAMIC' | 'IMAGE_DYNAMIC';
 
 const ADS_PER_PAGE = 10;
-// PROVIDED APIFY TOKEN
-const DEFAULT_APIFY_TOKEN = 'apify_api_g1VLAeviibIBAWapMCyIkPA79iKV852A7JgA';
+// No default token - User must provide their own
+const DEFAULT_APIFY_TOKEN = '';
 
 const App: React.FC = () => {
   // --- Auth State ---
@@ -50,6 +49,7 @@ const App: React.FC = () => {
   
   // --- Token Validation State ---
   const [tokenStatus, setTokenStatus] = useState<'IDLE' | 'VALIDATING' | 'VALID' | 'INVALID'>('IDLE');
+  const [apifyTokenStatus, setApifyTokenStatus] = useState<'IDLE' | 'VALIDATING' | 'VALID' | 'INVALID'>('IDLE');
 
   // --- Competitor State ---
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
@@ -233,6 +233,19 @@ const App: React.FC = () => {
       }
   };
 
+  const handleTestApifyToken = async () => {
+      if (!apifyToken) return;
+      setApifyTokenStatus('VALIDATING');
+      const result = await checkApifyConnection(apifyToken);
+      if (result.valid) {
+          setApifyTokenStatus('VALID');
+          alert(`Connexion Apify réussie ! Connecté en tant que : ${result.username}`);
+      } else {
+          setApifyTokenStatus('INVALID');
+          alert(`Erreur connexion Apify : ${result.error}`);
+      }
+  };
+
   // --- Group Management Handlers ---
 
   const handleCreateGroup = () => {
@@ -276,6 +289,110 @@ const App: React.FC = () => {
       }));
   };
 
+  // --- Single Ad Update Handler (Called by AdCard) ---
+  const handleAdUpdated = useCallback((adId: string, mediaUrl: string, mediaType: string) => {
+      setCompetitors(prev => prev.map(comp => ({
+          ...comp,
+          ads: comp.ads.map(ad => {
+              if (ad.id === adId) {
+                  return { ...ad, media_url: mediaUrl, media_type: mediaType as any };
+              }
+              return ad;
+          })
+      })));
+  }, []);
+
+  /**
+   * CORE LOGIC: SYNC MEDIA FROM APIFY
+   */
+  const performMediaSync = async (comp: Competitor, currentApifyToken: string) => {
+      setSyncingCompetitors(prev => new Set(prev).add(comp.id));
+      setSyncMessage(`Synchro médias pour ${comp.name}...`);
+      
+      try {
+          let updatedAds = [...comp.ads];
+
+          // 1. Run Apify Pipeline
+          const resultMap = await runFullSyncPipeline([comp.id], currentApifyToken, (msg) => setSyncMessage(msg));
+          
+          // 2. Merge Results
+          updatedAds = updatedAds.map(ad => {
+              if (resultMap.has(ad.id)) {
+                  const data = resultMap.get(ad.id)!;
+                  return {
+                      ...ad,
+                      media_type: data.media_type as any,
+                      media_url: data.media_url, 
+                      extracted_video_url: data.media_type === 'VIDEO' ? data.media_url : undefined,
+                      extracted_image_url: data.media_type === 'IMAGE' ? data.media_url : undefined
+                  };
+              }
+              return ad;
+          });
+
+          // 3. Update State safely
+          setCompetitors(prevCompetitors => {
+              return prevCompetitors.map(c => {
+                  if (c.id === comp.id) {
+                      return { ...c, ads: updatedAds, lastUpdated: new Date().toISOString() };
+                  }
+                  return c;
+              });
+          });
+
+          setSyncMessage(null);
+          return updatedAds;
+
+      } catch (e: any) {
+          console.error("Sync failed", e);
+          let msg = e.message;
+          if (msg.includes('401')) {
+              msg = "Token Apify invalide (401).";
+              setShowSettings(true);
+          } else if (msg.includes('ISO-8859-1')) {
+              msg = "Le token contient des caractères invalides.";
+              setShowSettings(true);
+          }
+          setErrorMsg("Échec de la synchronisation média: " + msg);
+          setSyncMessage(null);
+          return comp.ads;
+      } finally {
+          setSyncingCompetitors(prev => {
+              const next = new Set(prev);
+              next.delete(comp.id);
+              return next;
+          });
+      }
+  };
+
+  const handleSyncCompetitorButton = async (competitorId: string) => {
+      const comp = competitors.find(c => c.id === competitorId);
+      if (comp && apifyToken) {
+          await performMediaSync(comp, apifyToken);
+      } else {
+          setErrorMsg("Token Apify requis.");
+          setShowSettings(true);
+      }
+  };
+  
+  const handleBatchSync = async () => {
+      if (!apifyToken) {
+          setErrorMsg("Token Apify requis.");
+          setShowSettings(true);
+          return;
+      }
+
+      const targets = selectedCompetitorFilter === 'ALL' 
+          ? visibleCompetitors 
+          : visibleCompetitors.filter(c => c.id === selectedCompetitorFilter);
+
+      if (targets.length === 0) return;
+
+      for (const comp of targets) {
+          await performMediaSync(comp, apifyToken);
+      }
+  };
+
   const handleAddCompetitor = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPageId || !token) {
@@ -291,7 +408,7 @@ const App: React.FC = () => {
         const ads = await fetchCompetitorAds(newPageId, token, country);
 
         if (ads.length === 0 && !pageDetails) {
-             throw new Error("No active ads found for this ID, and unable to verify Page details. Please check the Page ID.");
+             throw new Error("Aucune publicité trouvée ou ID incorrect.");
         }
 
         const resolvedName = pageDetails?.name || ads[0]?.page_name || `Page ${newPageId}`;
@@ -309,7 +426,7 @@ const App: React.FC = () => {
         };
 
         if (competitors.some(c => c.id === newCompetitor.id)) {
-            throw new Error("This competitor has already been added.");
+            throw new Error("Ce concurrent est déjà suivi.");
         }
 
         setCompetitors(prev => [...prev, newCompetitor]);
@@ -318,6 +435,13 @@ const App: React.FC = () => {
         if (competitors.length === 0) {
             setCurrentView('DASHBOARD');
             setShowSettings(false);
+        }
+
+        // AUTO-TRIGGER MEDIA SYNC via APIFY
+        if (apifyToken && apifyToken.length > 5) {
+            setTimeout(() => {
+                performMediaSync(newCompetitor, apifyToken);
+            }, 500); 
         }
 
     } catch (err: any) {
@@ -342,10 +466,11 @@ const App: React.FC = () => {
               
               const mergedAds = freshAds.map(newAd => {
                   const existing = existingAdMap.get(newAd.id);
-                  if (existing && existing.media_type && existing.media_type !== 'UNKNOWN') {
+                  if (existing && (existing.extracted_video_url || existing.extracted_image_url || existing.media_url)) {
                       return {
                           ...newAd,
                           media_type: existing.media_type,
+                          media_url: existing.media_url,
                           extracted_video_url: existing.extracted_video_url,
                           extracted_image_url: existing.extracted_image_url
                       };
@@ -371,71 +496,6 @@ const App: React.FC = () => {
       setSelectedCompetitorFilter(competitorId);
       setCurrentView('ADS');
       setIsMobileMenuOpen(false);
-  };
-
-  // --- UPDATED SYNC HANDLER (APIFY INTEGRATION) ---
-  const handleSyncCompetitor = async (competitorId: string) => {
-      if (!user) return;
-      setSyncingCompetitors(prev => new Set(prev).add(competitorId));
-      setSyncMessage("Démarrage de la synchronisation...");
-      
-      try {
-          const compIndex = competitors.findIndex(c => c.id === competitorId);
-          if (compIndex === -1) return;
-
-          const comp = competitors[compIndex];
-          let updatedAds = [...comp.ads];
-
-          // DECISION: Use Apify if Token exists, else Local Scraper
-          if (apifyToken && apifyToken.length > 10) {
-              const resultMap = await runFullSyncPipeline([comp.id], apifyToken, (msg) => setSyncMessage(msg));
-              
-              // Merge results from Apify into local state
-              updatedAds = updatedAds.map(ad => {
-                  if (resultMap.has(ad.id)) {
-                      const data = resultMap.get(ad.id)!;
-                      return {
-                          ...ad,
-                          media_type: data.media_type as any,
-                          extracted_video_url: data.media_type === 'VIDEO' ? data.media_url : undefined,
-                          extracted_image_url: data.media_type === 'IMAGE' ? data.media_url : undefined
-                      };
-                  }
-                  return ad;
-              });
-          } else {
-              setSyncMessage("Utilisation du scraper local...");
-              // Local Headless Browser Fallback
-              const scannedAds = await batchDetectMediaTypes(comp.ads, (count, total) => {
-                  setSyncMessage(`Analyse locale: ${count}/${total} ads...`);
-              });
-              updatedAds = detectDynamicCreativeByBody(scannedAds);
-          }
-          
-          const updatedComp = { ...comp, ads: updatedAds, lastUpdated: new Date().toISOString() };
-          
-          const newCompetitors = [...competitors];
-          newCompetitors[compIndex] = updatedComp;
-          setCompetitors(newCompetitors);
-
-          await authService.saveUserData(user.email, {
-              competitors: newCompetitors,
-              groups,
-              settings: { apiToken: token, targetCountry: country, apifyToken },
-              hasSeenOnboarding: user.hasSeenOnboarding
-          });
-
-      } catch (e: any) {
-          console.error("Sync failed", e);
-          setErrorMsg("Échec de la synchronisation média: " + e.message);
-      } finally {
-          setSyncingCompetitors(prev => {
-              const next = new Set(prev);
-              next.delete(competitorId);
-              return next;
-          });
-          setSyncMessage(null);
-      }
   };
 
   // --- Derived Data ---
@@ -743,14 +803,12 @@ const App: React.FC = () => {
              </h2>
          </div>
          <div className="flex items-center space-x-3 lg:space-x-4">
-             {/* Sync Message Indicator */}
              {syncMessage && (
                  <div className="hidden sm:flex items-center text-xs text-orange-300 bg-orange-900/20 px-3 py-1.5 rounded-full border border-orange-900/30 animate-pulse">
                      <Loader2 className="w-3 h-3 mr-2 animate-spin" />
                      {syncMessage}
                  </div>
              )}
-             
              {token && competitors.length > 0 && (
                  <button 
                     onClick={refreshAllData}
@@ -770,12 +828,10 @@ const App: React.FC = () => {
 
       <main className="p-4 lg:p-8 max-w-7xl mx-auto">
         
-        {/* API Settings Modal/Panel */}
+        {/* Settings Modal - Identical to previous */}
         {showSettings && (
             <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
                 <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col md:flex-row max-h-[90vh]">
-                    
-                    {/* Left Panel: Configuration */}
                     <div className="flex-1 p-8 flex flex-col overflow-y-auto">
                         <div className="flex justify-between items-start mb-6">
                             <div>
@@ -791,7 +847,6 @@ const App: React.FC = () => {
                         </div>
                         
                         <div className="space-y-6">
-                            {/* META TOKEN */}
                             <div>
                                 <label className="block text-sm font-medium text-slate-300 mb-2">Meta Access Token</label>
                                 <div className="relative">
@@ -822,21 +877,40 @@ const App: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* APIFY TOKEN */}
                             <div>
                                 <label className="block text-sm font-medium text-slate-300 mb-2">Apify API Token (Auto-Scraping)</label>
-                                <div className="relative">
-                                    <input 
-                                        type="password" 
-                                        value={apifyToken} 
-                                        onChange={(e) => setApifyToken(e.target.value)}
-                                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-white focus:border-orange-500 focus:ring-orange-500/20 outline-none"
-                                        placeholder="Token Apify..."
-                                    />
+                                <div className="flex gap-2">
+                                    <div className="relative flex-1">
+                                        <input 
+                                            type="password" 
+                                            value={apifyToken} 
+                                            onChange={(e) => {
+                                                setApifyToken(sanitizeToken(e.target.value));
+                                                setApifyTokenStatus('IDLE');
+                                            }}
+                                            className={`w-full bg-slate-950 border rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 transition-all ${
+                                                apifyTokenStatus === 'INVALID' ? 'border-red-500 focus:ring-red-500/20' : 
+                                                apifyTokenStatus === 'VALID' ? 'border-emerald-500 focus:ring-emerald-500/20' : 
+                                                'border-slate-700 focus:border-orange-500 focus:ring-orange-500/20'
+                                            }`}
+                                            placeholder="Token Apify..."
+                                        />
+                                        <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                                            {apifyTokenStatus === 'VALID' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
+                                            {apifyTokenStatus === 'INVALID' && <XCircle className="w-5 h-5 text-red-500" />}
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={handleTestApifyToken}
+                                        disabled={!apifyToken || apifyTokenStatus === 'VALIDATING'}
+                                        className="bg-slate-800 hover:bg-slate-700 text-white px-4 rounded-lg border border-slate-700 font-medium text-sm disabled:opacity-50"
+                                        title="Vérifier le token"
+                                    >
+                                        {apifyTokenStatus === 'VALIDATING' ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Tester'}
+                                    </button>
                                 </div>
                             </div>
                             
-                            {/* SUPABASE CONFIG (NEW) */}
                             <div className="p-4 bg-slate-950/50 rounded-lg border border-slate-800 space-y-4">
                                 <h4 className="text-sm font-bold text-white flex items-center">
                                     <Database className="w-4 h-4 mr-2 text-emerald-500" />
@@ -896,14 +970,11 @@ const App: React.FC = () => {
                             </button>
                         </div>
                     </div>
-
-                    {/* Right Panel: Tutorial */}
                     <div className="bg-slate-950 border-l border-slate-800 p-8 flex-1 overflow-y-auto">
                          <div className="flex items-center mb-6">
                              <HelpCircle className="w-5 h-5 text-blue-400 mr-2" />
                              <h4 className="text-lg font-bold text-white">Guide de Configuration</h4>
                          </div>
-                         
                          <div className="space-y-6 text-sm text-slate-400">
                              <div className="relative pl-6 border-l-2 border-slate-800">
                                  <span className="absolute -left-[5px] top-0 w-2.5 h-2.5 rounded-full bg-slate-700"></span>
@@ -913,16 +984,14 @@ const App: React.FC = () => {
                                      Portail Développeur <ExternalLink className="w-3 h-3 ml-1" />
                                  </a>
                              </div>
-
                              <div className="relative pl-6 border-l-2 border-slate-800">
                                  <span className="absolute -left-[5px] top-0 w-2.5 h-2.5 rounded-full bg-slate-700"></span>
                                  <h5 className="text-slate-200 font-bold mb-1">Apify & Supabase</h5>
-                                 <p>L'intégration Apify permet de télécharger automatiquement les vidéos et images de haute qualité et de les sauvegarder définitivement sur votre instance Supabase.</p>
+                                 <p>L'intégration Apify permet de télécharger automatiquement les vidéos et images de haute qualité.</p>
                                  <p className="mt-2 text-xs text-emerald-400">Status: {apifyToken ? 'Actif' : 'Inactif'}</p>
                              </div>
                          </div>
                     </div>
-                    
                     <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 text-slate-500 hover:text-white hidden md:block">
                         <X className="w-6 h-6" />
                     </button>
@@ -943,13 +1012,12 @@ const App: React.FC = () => {
         {currentView === 'DASHBOARD' && (
             <>
                 {competitors.length > 0 && <CategoryTabs />}
-                
                 {visibleCompetitors.length > 0 ? (
                     <div id="chart-section">
                     <CompetitorStats 
                         competitors={visibleCompetitors} 
                         onExplore={handleExploreCompetitor}
-                        onSync={handleSyncCompetitor}
+                        onSync={handleSyncCompetitorButton}
                         syncingCompetitors={syncingCompetitors}
                         dateFilter={dashboardDateRange}
                         customStartDate={customStart ? new Date(customStart) : undefined}
@@ -985,9 +1053,7 @@ const App: React.FC = () => {
         {/* VIEW: ADS EXPLORER */}
         {currentView === 'ADS' && (
              <div className="space-y-6 animate-in fade-in">
-                 {/* Filters & Actions Bar */}
                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl flex flex-col md:flex-row gap-4 items-center justify-between sticky top-20 z-20 shadow-lg">
-                     {/* Search & Global Filter */}
                      <div className="flex items-center gap-2 w-full md:w-auto flex-1">
                          <div className="relative flex-1 md:max-w-xs">
                              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -999,7 +1065,6 @@ const App: React.FC = () => {
                                 className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-4 py-2 text-sm text-white focus:border-orange-500 outline-none"
                              />
                          </div>
-                         
                          <div className="relative">
                             <select 
                                 value={selectedCompetitorFilter}
@@ -1011,25 +1076,33 @@ const App: React.FC = () => {
                             </select>
                          </div>
                      </div>
-
-                     {/* Right Actions */}
                      <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-1 md:pb-0">
-                         {/* Time Range */}
                          <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-700">
                              <button onClick={() => setExplorerTimeRange('7d')} className={`px-2 py-1 rounded text-xs font-bold ${explorerTimeRange === '7d' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>7d</button>
                              <button onClick={() => setExplorerTimeRange('30d')} className={`px-2 py-1 rounded text-xs font-bold ${explorerTimeRange === '30d' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>30d</button>
                              <button onClick={() => setExplorerTimeRange('ALL')} className={`px-2 py-1 rounded text-xs font-bold ${explorerTimeRange === 'ALL' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>All</button>
                          </div>
-                         
-                         {/* Media Type */}
                          <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-700">
                              <button onClick={() => setExplorerMediaFilter('ALL')} className={`p-1.5 rounded ${explorerMediaFilter === 'ALL' ? 'bg-slate-700 text-white' : 'text-slate-500'}`} title="All"><Layers className="w-3.5 h-3.5" /></button>
                              <button onClick={() => setExplorerMediaFilter('VIDEO')} className={`p-1.5 rounded ${explorerMediaFilter === 'VIDEO' ? 'bg-rose-900/50 text-rose-400' : 'text-slate-500'}`} title="Video"><Video className="w-3.5 h-3.5" /></button>
                              <button onClick={() => setExplorerMediaFilter('IMAGE')} className={`p-1.5 rounded ${explorerMediaFilter === 'IMAGE' ? 'bg-indigo-900/50 text-indigo-400' : 'text-slate-500'}`} title="Image"><ImageIcon className="w-3.5 h-3.5" /></button>
                              <button onClick={() => setExplorerMediaFilter('DYNAMIC')} className={`p-1.5 rounded ${explorerMediaFilter === 'DYNAMIC' ? 'bg-purple-900/50 text-purple-400' : 'text-slate-500'}`} title="Dynamic"><Layers className="w-3.5 h-3.5" /></button>
                          </div>
-
-                         {/* Analyze Button */}
+                         {apifyToken && competitors.length > 0 && (
+                            <button
+                                onClick={handleBatchSync}
+                                disabled={syncingCompetitors.size > 0}
+                                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors border border-slate-700 ${
+                                    syncingCompetitors.size > 0 
+                                        ? 'bg-slate-800 text-orange-400 border-orange-500/30' 
+                                        : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
+                                }`}
+                                title="Lancer l'analyse Apify pour les concurrents affichés"
+                            >
+                                <RefreshCw className={`w-3.5 h-3.5 ${syncingCompetitors.size > 0 ? 'animate-spin' : ''}`} />
+                                <span className="hidden sm:inline">Synchroniser Médias HD</span>
+                            </button>
+                         )}
                          <button 
                              onClick={handleAnalyze}
                              disabled={filteredAds.length === 0 || appState === AppState.ANALYZING}
@@ -1038,8 +1111,6 @@ const App: React.FC = () => {
                              {appState === AppState.ANALYZING ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5" />}
                              <span className="hidden sm:inline">Analyze Strategy</span>
                          </button>
-
-                         {/* Export */}
                          <button 
                              onClick={handleExport}
                              disabled={filteredAds.length === 0}
@@ -1051,19 +1122,22 @@ const App: React.FC = () => {
                      </div>
                  </div>
 
-                 {/* Analysis Result Panel */}
                  <AnalysisPanel analysis={analysis} isAnalyzing={appState === AppState.ANALYZING} onClose={handleClearAnalysis} />
 
-                 {/* Ads Grid */}
                  {displayedAds.length > 0 ? (
                      <>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                             {displayedAds.map(ad => (
-                                <AdCard key={ad.id} ad={ad} />
+                                <AdCard 
+                                    key={ad.id} 
+                                    ad={ad} 
+                                    apifyToken={apifyToken} 
+                                    facebookToken={token} 
+                                    autoLoad={false}
+                                    onAdUpdated={handleAdUpdated}
+                                />
                             ))}
                         </div>
-
-                        {/* Pagination */}
                         {totalPages > 1 && (
                             <div className="flex justify-center items-center gap-4 py-8">
                                 <button 
@@ -1095,14 +1169,12 @@ const App: React.FC = () => {
 
         {/* VIEW: HIT PARADE */}
         {currentView === 'HIT_PARADE' && (
-             <TopAdsRanking ads={allAds} />
+             <TopAdsRanking ads={allAds} apifyToken={apifyToken} facebookToken={token} />
         )}
 
         {/* VIEW: COMPETITORS MANAGEMENT */}
         {currentView === 'COMPETITORS' && (
              <div className="space-y-6 animate-in fade-in">
-                 
-                 {/* Group Management */}
                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
                      <div className="flex justify-between items-center mb-4">
                          <h3 className="text-white font-bold flex items-center">
@@ -1150,7 +1222,6 @@ const App: React.FC = () => {
                      )}
                  </div>
 
-                 {/* Add Competitor */}
                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
                      <h3 className="text-white font-bold flex items-center mb-4">
                          <Plus className="w-5 h-5 mr-2 text-orange-400" />
@@ -1177,7 +1248,6 @@ const App: React.FC = () => {
                      </form>
                  </div>
 
-                 {/* Competitor List */}
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                      {competitors.map(comp => (
                          <div key={comp.id} className="bg-slate-800 border border-slate-700 rounded-xl p-4 flex justify-between items-start group">
@@ -1201,7 +1271,6 @@ const App: React.FC = () => {
                                              <button className="bg-slate-900 hover:bg-slate-700 px-2 py-0.5 rounded text-[10px] text-slate-400 border border-slate-800 flex items-center">
                                                  <Plus className="w-3 h-3" />
                                              </button>
-                                             {/* Dropdown to add group */}
                                              <div className="absolute top-full left-0 mt-1 w-32 bg-slate-900 border border-slate-700 rounded shadow-xl hidden group-hover/add:block z-10">
                                                  {groups.filter(g => !comp.groups?.includes(g)).map(g => (
                                                      <button 
@@ -1218,13 +1287,28 @@ const App: React.FC = () => {
                                      </div>
                                  </div>
                              </div>
-                             <button 
-                                onClick={() => removeCompetitor(comp.id)}
-                                className="text-slate-600 hover:text-red-500 p-2 transition-colors"
-                                title="Remove Competitor"
-                             >
-                                 <Trash2 className="w-5 h-5" />
-                             </button>
+                             
+                             <div className="flex items-center gap-1">
+                                <button 
+                                   onClick={() => handleSyncCompetitorButton(comp.id)}
+                                   disabled={syncingCompetitors.has(comp.id)}
+                                   className={`p-2 rounded-lg transition-colors ${
+                                       syncingCompetitors.has(comp.id) 
+                                       ? 'text-orange-400 bg-orange-900/20' 
+                                       : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                   }`}
+                                   title="Forcer la synchronisation Apify (Récupération HD)"
+                                >
+                                    <RefreshCw className={`w-5 h-5 ${syncingCompetitors.has(comp.id) ? 'animate-spin' : ''}`} />
+                                </button>
+                                <button 
+                                   onClick={() => removeCompetitor(comp.id)}
+                                   className="text-slate-600 hover:text-red-500 p-2 transition-colors hover:bg-slate-700 rounded-lg"
+                                   title="Remove Competitor"
+                                >
+                                    <Trash2 className="w-5 h-5" />
+                                </button>
+                             </div>
                          </div>
                      ))}
                  </div>
