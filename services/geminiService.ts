@@ -1,7 +1,15 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { AdEntity, AnalysisResult, SingleAdAnalysisResult } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Lazy initialization to avoid crash if API_KEY is undefined at load time
+let _ai: GoogleGenAI | null = null;
+const getAI = (): GoogleGenAI => {
+  if (!_ai) {
+    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY || '';
+    _ai = new GoogleGenAI({ apiKey });
+  }
+  return _ai;
+};
 
 /**
  * Nettoie et déduplique les données provenant d'Apify
@@ -22,10 +30,10 @@ export const analyzeAdsStrategy = async (ads: AdEntity[]): Promise<AnalysisResul
   const adsTextData = ads.map(ad => {
     // Utilisation des champs disponibles dans AdEntity
     const bodyText = ad.ad_creative_bodies?.[0] || 'N/A';
-    
+
     // Récupérer le titre
     const titleText = ad.ad_creative_link_titles?.[0] || 'N/A';
-    
+
     // AdEntity ne contient pas la structure 'cards' détaillée du snapshot, on utilise des tableaux vides par défaut
     // ou on pourrait mapper les tableaux link_titles/descriptions si on considère que c'est un carrousel.
     const cardDetails = (ad.ad_creative_link_captions || []).map((caption, idx) => ({
@@ -57,6 +65,7 @@ Fais une analyse structurée en français au format JSON avec :
 - 3 recommandations pour améliorer sa stratégie`;
 
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
@@ -66,10 +75,7 @@ Fais une analyse structurée en français au format JSON avec :
           type: Type.OBJECT,
           properties: {
             summary: { type: Type.STRING },
-            keyThemes: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            },
+            keyThemes: { type: Type.ARRAY, items: { type: Type.STRING } },
             targetAudience: { type: Type.STRING },
             toneOfVoice: { type: Type.STRING },
             recommendations: { type: Type.STRING }
@@ -78,7 +84,6 @@ Fais une analyse structurée en français au format JSON avec :
         }
       }
     });
-
     return JSON.parse(response.text) as AnalysisResult;
   } catch (error) {
     console.error("Gemini Error:", error);
@@ -121,6 +126,7 @@ Fournir une analyse structurée en français au format JSON avec :
 - Points à améliorer (tableau)`;
 
   try {
+    const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
@@ -133,20 +139,13 @@ Fournir une analyse structurée en français au format JSON avec :
             visualHook: { type: Type.STRING },
             visualStructure: { type: Type.STRING },
             objectiveAlignment: { type: Type.STRING },
-            pros: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            },
-            cons: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING } 
-            }
+            pros: { type: Type.ARRAY, items: { type: Type.STRING } },
+            cons: { type: Type.ARRAY, items: { type: Type.STRING } }
           },
           required: ["copyAnalysis", "visualHook", "visualStructure", "objectiveAlignment", "pros", "cons"]
         }
       }
     });
-
     return JSON.parse(response.text) as SingleAdAnalysisResult;
   } catch (error) {
     console.error("Gemini Single Ad Error:", error);
