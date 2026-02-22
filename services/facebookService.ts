@@ -101,17 +101,42 @@ export const fetchCompetitorAds = async (
   let allAds: AdEntity[] = [];
   // Changed ad_active_status to ALL to get stopped ads for history
   // Added ad_delivery_date_min to limit to recent history (performance optimization)
-  let nextUrl: string | null = `${BASE_URL}/ads_archive?access_token=${cleanToken}&search_page_ids=${cleanPageId}&ad_active_status=ALL&ad_reached_countries=['${country}']&ad_delivery_date_min=${minDate}&fields=${fields}&limit=100`;
+  // Reduced limit to 50 to avoid "Unknown Error" (Code 1)
+  let nextUrl: string | null = `${BASE_URL}/ads_archive?access_token=${cleanToken}&search_page_ids=${cleanPageId}&ad_active_status=ALL&ad_reached_countries=['${country}']&ad_delivery_date_min=${minDate}&fields=${fields}&limit=50`;
   
   const MAX_ADS = 1500; // Increased safety cap slightly to accommodate history
 
   try {
     do {
-        const response = await fetch(nextUrl);
-        const data = await response.json();
+        let response = await fetch(nextUrl);
+        let data = await response.json();
+
+        // Retry logic for Code 1 (Unknown Error) on first page
+        if (!response.ok && data.error?.code === 1 && allAds.length === 0) {
+            console.warn("Encountered Code 1 error, retrying with simplified parameters...");
+            // Retry without ad_reached_countries (sometimes causes issues with ALL status)
+            const retryUrl = `${BASE_URL}/ads_archive?access_token=${cleanToken}&search_page_ids=${cleanPageId}&ad_active_status=ALL&ad_delivery_date_min=${minDate}&fields=${fields}&limit=40`;
+            response = await fetch(retryUrl);
+            data = await response.json();
+        }
 
         if (!response.ok) {
             console.error("FB API Error Details:", JSON.stringify(data, null, 2));
+            
+            // Handle specific error codes
+            if (data.error?.code === 190) {
+                throw new Error("Session expirée. Veuillez générer un nouveau Token d'accès Meta.");
+            }
+            
+            if (data.error?.code === 1) {
+                // Unknown error - often transient or rate limit related
+                if (allAds.length > 0) {
+                    console.warn("Partial fetch returned due to unknown error on next page");
+                    return allAds;
+                }
+                throw new Error("Erreur inconnue de l'API Meta. Veuillez réessayer plus tard ou vérifier le Page ID.");
+            }
+
             if (allAds.length > 0) {
                 console.warn("Partial fetch returned due to error on next page");
                 return allAds;
