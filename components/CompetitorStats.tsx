@@ -10,7 +10,6 @@ import { Trophy, Users, Globe, Activity, Video, ScanSearch, RefreshCw, Coins, Me
 interface CompetitorStatsProps {
   competitors: Competitor[];
   onExplore: (competitorId: string) => void;
-  onSync: (competitorId: string) => void;
   syncingCompetitors: Set<string>;
   dateFilter: DashboardDateRange;
   customStartDate?: Date;
@@ -115,7 +114,7 @@ const ChartFilterMenu = ({
     );
 };
 
-export const CompetitorStats: React.FC<CompetitorStatsProps> = ({ competitors, onExplore, onSync, syncingCompetitors, dateFilter, customStartDate, customEndDate }) => {
+export const CompetitorStats: React.FC<CompetitorStatsProps> = ({ competitors, onExplore, syncingCompetitors, dateFilter, customStartDate, customEndDate }) => {
   
   // --- Independent Visibility States for each Chart ---
   const [visReach, setVisReach] = useState<Set<string>>(new Set());
@@ -585,15 +584,6 @@ export const CompetitorStats: React.FC<CompetitorStatsProps> = ({ competitors, o
                                     )}
                                 </td>
                                 <td className="px-6 py-4 text-center flex justify-center space-x-2">
-                                    <button 
-                                        id={idx === 0 ? "sync-button-0" : undefined}
-                                        onClick={() => onSync(comp.id)}
-                                        disabled={isSyncing}
-                                        className={`p-2 rounded-lg transition-all ${isSyncing ? 'bg-slate-800 text-orange-400' : 'bg-slate-800 hover:bg-orange-600 text-slate-400 hover:text-white'}`}
-                                        title="Synchroniser l'analyse média"
-                                    >
-                                        <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-                                    </button>
                                     <button 
                                         onClick={() => onExplore(comp.id)}
                                         className="p-2 bg-slate-800 hover:bg-orange-600 text-slate-400 hover:text-white rounded-lg transition-all"

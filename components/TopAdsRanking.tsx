@@ -6,8 +6,6 @@ import { Trophy, Video, Image as ImageIcon, Globe, TrendingUp, Medal, Filter, Ch
 
 interface TopAdsRankingProps {
   ads: AdEntity[];
-  apifyToken?: string;
-  facebookToken?: string;
 }
 
 type TimeRange = '7d' | '30d' | 'ALL';
@@ -15,7 +13,7 @@ type MediaFilter = 'ALL' | 'VIDEO' | 'IMAGE' | 'DYNAMIC' | 'IMAGE_DYNAMIC';
 
 const AGE_RANGES = ['18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
 
-export const TopAdsRanking: React.FC<TopAdsRankingProps> = ({ ads, apifyToken, facebookToken }) => {
+export const TopAdsRanking: React.FC<TopAdsRankingProps> = ({ ads }) => {
   const [timeRange, setTimeRange] = useState<TimeRange>('30d');
   const [ageFilter, setAgeFilter] = useState<string>('ALL');
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('ALL');
@@ -249,7 +247,7 @@ export const TopAdsRanking: React.FC<TopAdsRankingProps> = ({ ads, apifyToken, f
 
                     {/* The Ad Card */}
                     <div className="transform transition-all duration-300 hover:-translate-y-1">
-                        <AdCard ad={item.ad} autoLoad={true} apifyToken={apifyToken} facebookToken={facebookToken} />
+                        <AdCard ad={item.ad} autoLoad={true} />
                     </div>
                     
                     {/* Podium Effect for Top 3 */}

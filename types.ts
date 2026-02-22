@@ -58,7 +58,7 @@ export interface AdEntity {
   extracted_image_url?: string;
   extracted_video_url?: string;
   media_type?: 'VIDEO' | 'IMAGE' | 'DYNAMIC_IMAGE' | 'UNKNOWN' | 'SCREENSHOT';
-  media_url?: string; // URL directe depuis Apify/Supabase
+  media_url?: string; // URL directe depuis Proxy/Supabase
 }
 
 export interface Competitor {
@@ -131,7 +131,6 @@ export interface UserData {
   settings: {
     apiToken: string;
     targetCountry: string;
-    apifyToken?: string; // New field for Apify integration
   };
   hasSeenOnboarding?: boolean;
 }

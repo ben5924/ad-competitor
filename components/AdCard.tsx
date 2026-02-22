@@ -1,14 +1,12 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { AdEntity } from '../types';
-import { extractSingleAd } from '../services/apifyService';
+import { extractMediaFromPage } from '../services/mediaExtractionService';
 import { ExternalLink, Clock, Download, Database, X, Facebook, Globe, Loader2, EyeOff, CheckCircle2, RefreshCcw, Camera, PlayCircle, RefreshCw } from 'lucide-react';
 
 interface AdCardProps {
   ad: AdEntity;
   autoLoad?: boolean;
-  apifyToken?: string;
-  facebookToken?: string;
   onAdUpdated?: (adId: string, mediaUrl: string, mediaType: string) => void;
 }
 
@@ -20,7 +18,7 @@ const PlatformIcon: React.FC<{ platform: string }> = ({ platform }) => {
   return <Globe className="w-3.5 h-3.5 text-slate-500" />;
 };
 
-export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken, facebookToken, onAdUpdated }) => {
+export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, onAdUpdated }) => {
   // --- STATE INITIALIZATION ---
   const [mediaState, setMediaState] = useState<{
     status: 'IDLE' | 'LOADING' | 'SUCCESS' | 'ERROR';
@@ -76,48 +74,42 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken
       return { days, isActive: !ad.ad_delivery_stop_time };
   }, [ad]);
 
-  // --- STRICT APIFY EXTRACTION ---
+  // --- PROXY EXTRACTION ---
   const handleFetchMedia = useCallback(async (forceRefresh = false) => {
     if (mediaState.status === 'LOADING') return;
-
-    if (!apifyToken) {
-        setMediaState(prev => ({ ...prev, status: 'ERROR', errorMessage: "Token Apify manquant. Configurez-le dans les paramètres." }));
-        return;
-    }
-
     setMediaState(prev => ({ ...prev, status: 'LOADING', errorMessage: undefined }));
 
     try {
-        console.log(`[AdCard] Launching extraction for ${ad.id} (Force: ${forceRefresh})`);
-        // APPEL DIRECT À APIFY AVEC TOKEN FACEBOOK SI DISPO
-        const result = await extractSingleAd(ad.id, apifyToken, facebookToken);
+        // ÉTAPE 1 : Tentative rapide via proxy CORS (gratuit, pas de token requis)
+        console.log(`[AdCard] Trying proxy extraction for ${ad.id}`);
+        const proxyResult = await extractMediaFromPage(ad.ad_snapshot_url);
         
-        if (result && result.media_url) {
-            console.log(`[AdCard] Success for ${ad.id}:`, result.media_url);
+        if (proxyResult?.url) {
+            console.log(`[AdCard] ✅ Proxy success for ${ad.id}`);
             setMediaState({ 
                 status: 'SUCCESS', 
-                url: result.media_url, 
-                type: result.media_type as MediaType, 
-                source: 'APIFY_SINGLE' 
+                url: proxyResult.url, 
+                type: proxyResult.type as MediaType, 
+                source: 'PROXY_SINGLE' 
             });
             
-            // Notification au parent pour mise à jour du state global
             if (onAdUpdated) {
-                onAdUpdated(ad.id, result.media_url, result.media_type);
+                onAdUpdated(ad.id, proxyResult.url, proxyResult.type);
             }
             
-            // Fallback local mutation (au cas où le parent ne met pas à jour)
-            ad.media_url = result.media_url;
-            ad.media_type = result.media_type as any;
+            // Fallback local mutation
+            ad.media_url = proxyResult.url;
+            ad.media_type = proxyResult.type as any;
+            return;
         } else {
-             console.warn(`[AdCard] No media found for ${ad.id}`);
-             setMediaState({ status: 'ERROR', errorMessage: "Apify n'a trouvé aucun média HD." });
+             console.warn(`[AdCard] Proxy failed for ${ad.id}`);
+             setMediaState({ status: 'ERROR', errorMessage: "Aucun média trouvé via le proxy." });
         }
     } catch (err: any) {
-        console.error("Apify Extraction Error", err);
-        setMediaState({ status: 'ERROR', errorMessage: "Erreur lors de l'extraction Apify." });
+        console.warn("Proxy Extraction Error", err);
+        setMediaState({ status: 'ERROR', errorMessage: "Erreur lors de l'extraction." });
     }
-  }, [ad, apifyToken, facebookToken, mediaState.status, onAdUpdated]);
+  }, [ad, mediaState.status, onAdUpdated]);
 
   // Trigger autoLoad ONLY if explicitly enabled (disabled by default to save credits)
   useEffect(() => {
@@ -135,7 +127,7 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken
           let ext = 'jpg';
           if (mediaState.type === 'VIDEO') ext = 'mp4';
           
-          a.download = `apify-media-${ad.id}.${ext}`;
+          a.download = `ad-media-${ad.id}.${ext}`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
@@ -165,7 +157,7 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken
         <div className="relative overflow-hidden rounded-lg bg-slate-950 min-h-[220px] flex items-center justify-center border border-slate-700/50">
              
              {/* Source Indicator */}
-             {(mediaState.source === 'BACKEND_SYNC' || mediaState.source === 'APIFY_SINGLE') && (
+             {(mediaState.source === 'BACKEND_SYNC' || mediaState.source === 'PROXY_SINGLE') && (
                  <div className="absolute top-2 left-2 bg-emerald-600 text-white text-[9px] px-2 py-1 rounded shadow-lg z-10 font-bold flex items-center">
                      <CheckCircle2 className="w-3 h-3 mr-1" /> HD
                  </div>
@@ -175,7 +167,7 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken
              {mediaState.status === 'LOADING' && (
                  <div className="flex flex-col items-center p-4 text-center z-20">
                      <Loader2 className="w-8 h-8 text-orange-500 animate-spin mb-3" />
-                     <p className="text-xs text-slate-400 font-medium">Extraction Apify en cours...</p>
+                     <p className="text-xs text-slate-400 font-medium">Extraction en cours...</p>
                      <p className="text-[10px] text-slate-600 mt-1">Scan Live Facebook...</p>
                  </div>
              )}
@@ -216,7 +208,7 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken
                                 handleFetchMedia(true);
                             }}
                             className="p-2 bg-black/70 text-white rounded-full hover:bg-orange-600 transition-colors backdrop-blur-sm"
-                            title="Forcer une nouvelle extraction Apify (Si l'image est incorrecte)"
+                            title="Forcer une nouvelle extraction"
                         >
                             <RefreshCw className="w-3 h-3" />
                         </button>
@@ -246,15 +238,11 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, apifyToken
                     
                     <button 
                         onClick={() => handleFetchMedia(false)}
-                        className={`text-xs font-bold px-4 py-2 rounded-lg flex items-center transition-all shadow-lg ${
-                            !apifyToken 
-                            ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' 
-                            : 'bg-orange-600 hover:bg-orange-500 text-white shadow-orange-900/20'
-                        }`}
-                        title={!apifyToken ? "Configurez le token Apify d'abord" : "Lancer une extraction temps réel"}
+                        className={`text-xs font-bold px-4 py-2 rounded-lg flex items-center transition-all shadow-lg bg-orange-600 hover:bg-orange-500 text-white shadow-orange-900/20`}
+                        title="Lancer une extraction temps réel"
                     >
                         {mediaState.status === 'ERROR' ? <RefreshCcw className="w-3.5 h-3.5 mr-2" /> : <Download className="w-3.5 h-3.5 mr-2" />}
-                        {mediaState.status === 'ERROR' ? 'Réessayer (Apify)' : 'Charger via Apify'}
+                        {mediaState.status === 'ERROR' ? 'Réessayer' : 'Charger Média'}
                     </button>
 
                     <a 
