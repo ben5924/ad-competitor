@@ -1023,7 +1023,7 @@ const App: React.FC = () => {
                                 <AdCard 
                                     key={ad.id} 
                                     ad={ad} 
-                                    autoLoad={false}
+                                    autoLoad={true}
                                     onAdUpdated={handleAdUpdated}
                                 />
                             ))}
