@@ -1,5 +1,11 @@
 {
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
-  ]
+  ],
+  "functions": {
+    "api/extract.js": {
+      "memory": 1024,
+      "maxDuration": 30
+    }
+  }
 }
