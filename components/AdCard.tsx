@@ -27,6 +27,17 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, onAdUpdate
     source?: string;
     errorMessage?: string;
   }>(() => {
+    // PRIORITÉ 0 : URL directe de l'API Meta (la plus fiable)
+    if (ad.ad_creative_media_urls && ad.ad_creative_media_urls.length > 0) {
+        const url = ad.ad_creative_media_urls[0];
+        const isVideo = url.includes('.mp4') || url.includes('video');
+        return {
+            status: 'SUCCESS',
+            url,
+            type: isVideo ? 'VIDEO' : 'IMAGE' as MediaType,
+            source: 'META_API'
+        };
+    }
     // 1. PRIORITÉ : Données déjà présentes (via Batch Sync ou DB)
     if (ad.media_url && ad.media_type) {
         return { 
@@ -54,6 +65,17 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, onAdUpdate
   
   // --- EFFECT: SYNC PROPS TO STATE ---
   useEffect(() => {
+    if (ad.ad_creative_media_urls?.[0] && mediaState.source !== 'META_API') {
+        const url = ad.ad_creative_media_urls[0];
+        setMediaState({
+            status: 'SUCCESS',
+            url,
+            type: url.includes('.mp4') ? 'VIDEO' : 'IMAGE',
+            source: 'META_API'
+        });
+        return;
+    }
+
     if (ad.media_url && ad.media_type) {
         // Only update if we are not currently loading or if the URL actually changed
         if (mediaState.status !== 'LOADING' && mediaState.url !== ad.media_url) {
@@ -65,7 +87,7 @@ export const AdCard: React.FC<AdCardProps> = ({ ad, autoLoad = false, onAdUpdate
             });
         }
     }
-  }, [ad.media_url, ad.media_type, mediaState.status, mediaState.url]);
+  }, [ad.media_url, ad.media_type, mediaState.status, mediaState.url, ad.ad_creative_media_urls, mediaState.source]);
 
   const durationInfo = useMemo(() => {
       const start = new Date(ad.ad_creation_time).getTime();

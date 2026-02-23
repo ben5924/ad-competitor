@@ -8,6 +8,7 @@ export interface AdEntity {
   ad_creative_link_captions?: string[];
   ad_creative_link_titles?: string[];
   ad_creative_link_descriptions?: string[];
+  ad_creative_media_urls?: string[];
   ad_snapshot_url: string;
   page_id: string;
   page_name: string;
