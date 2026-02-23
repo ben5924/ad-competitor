@@ -92,8 +92,14 @@ app.post('/api/extract', async (req, res) => {
                     const isFbCdn = responseUrl.includes('fbcdn.net') || responseUrl.includes('scontent');
                     const isNotSmall = !responseUrl.includes('_s.') && !responseUrl.includes('_t.') && !responseUrl.includes('emoji');
                     const isNotProfile = !responseUrl.includes('profile') && !responseUrl.includes('avatar');
+                    
+                    // ✅ AJOUT : Exclure les images de l'UI Facebook (placeholder, branding)
+                    const isNotFbUI = !responseUrl.includes('rsrc.php') && 
+                                      !responseUrl.includes('safe_image') &&
+                                      !responseUrl.includes('platform/') &&
+                                      !responseUrl.includes('ads/image/'); // Placeholder snapshot
 
-                    if (isFbCdn && isNotSmall && isNotProfile) {
+                    if (isFbCdn && isNotSmall && isNotProfile && isNotFbUI) {
                         networkImages.push(responseUrl);
                     }
                 }
@@ -186,9 +192,9 @@ app.post('/api/extract', async (req, res) => {
                 .filter(img => {
                     const src = img.src || '';
                     return (src.includes('fbcdn') || src.includes('scontent')) &&
-                           img.naturalWidth > 200 && img.naturalHeight > 200 &&
+                           img.naturalWidth > 400 && img.naturalHeight > 400 &&
                            !src.includes('profile') && !src.includes('emoji') &&
-                           !src.includes('_s.');
+                           !src.includes('_s.') && !src.includes('rsrc.php');
                 })
                 .sort((a, b) => (b.naturalWidth * b.naturalHeight) - (a.naturalWidth * a.naturalHeight));
 

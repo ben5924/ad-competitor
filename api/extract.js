@@ -56,15 +56,39 @@ export default async function handler(req, res) {
           const isFbCdn = rUrl.includes('fbcdn.net') || rUrl.includes('scontent');
           const isNotSmall = !rUrl.includes('_s.') && !rUrl.includes('_t.') && !rUrl.includes('emoji');
           const isNotProfile = !rUrl.includes('profile') && !rUrl.includes('avatar');
-          if (isFbCdn && isNotSmall && isNotProfile) {
-            networkImages.push(rUrl);
+          
+          // ✅ AJOUT : Exclure les images de l'UI Facebook (placeholder, branding)
+          const isNotFbUI = !rUrl.includes('rsrc.php') && 
+                            !rUrl.includes('safe_image') &&
+                            !rUrl.includes('platform/') &&
+                            !rUrl.includes('ads/image/'); // Placeholder snapshot
+
+          // NOUVEAU : privilégier les images avec dimensions HD dans l'URL
+          const isLikelyCreative = rUrl.includes('_n.') || rUrl.includes('_o.') 
+                                 || rUrl.includes('p720x720') || rUrl.includes('p960x960')
+                                 || rUrl.includes('p1080x') || rUrl.includes('s960x');
+
+          if (isFbCdn && isNotSmall && isNotProfile && isNotFbUI) {
+            if (isLikelyCreative) {
+              // Mettre en priorité les images clairement créatives
+              networkImages.unshift(rUrl);
+            } else {
+              networkImages.push(rUrl);
+            }
           }
         }
       } catch (e) {}
     });
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 25000 });
-    await new Promise((r) => setTimeout(r, 2000));
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+
+    // Attendre que le vrai contenu de la pub soit chargé
+    // Facebook charge le créatif après un délai supplémentaire
+    await new Promise((r) => setTimeout(r, 4000));
+
+    // Scroller pour déclencher le lazy loading
+    await page.evaluate(() => window.scrollBy(0, 300));
+    await new Promise((r) => setTimeout(r, 1500));
 
     // Extraction DOM (même logique que ton server.js actuel)
     const domResult = await page.evaluate(() => {
@@ -93,6 +117,8 @@ export default async function handler(req, res) {
         }
         const imagePatterns = [
           /"original_image_url":"(https:[^"]+(?:jpg|jpeg|png|webp)[^"]*)"/,
+          /"image_url":"(https:[^"]+(?:jpg|jpeg|png|webp)[^"]*)"/,
+          /"uri":"(https:[^"]+(?:jpg|jpeg|png|webp)[^"]*fbcdn[^"]*)"/,
         ];
         for (const pat of imagePatterns) {
           const match = content.match(pat);
@@ -110,11 +136,12 @@ export default async function handler(req, res) {
           const src = img.src || '';
           return (
             (src.includes('fbcdn') || src.includes('scontent')) &&
-            img.naturalWidth > 200 &&
-            img.naturalHeight > 200 &&
+            img.naturalWidth > 400 &&
+            img.naturalHeight > 400 &&
             !src.includes('profile') &&
             !src.includes('emoji') &&
-            !src.includes('_s.')
+            !src.includes('_s.') &&
+            !src.includes('rsrc.php')
           );
         })
         .sort((a, b) => b.naturalWidth * b.naturalHeight - a.naturalWidth * a.naturalHeight);

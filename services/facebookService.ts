@@ -86,6 +86,7 @@ export const fetchCompetitorAds = async (
     'ad_creative_link_captions',
     'ad_creative_link_titles',
     'ad_creative_link_descriptions',
+    'ad_creative_media_urls',
     'ad_snapshot_url',
     'page_id',
     'page_name',
